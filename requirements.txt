@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+
+# TODO: Add the libraries needed for the scraping process
