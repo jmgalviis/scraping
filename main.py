@@ -1,9 +1,10 @@
-
+import asyncio
 from fastapi.responses import RedirectResponse
 from fastapi.openapi.utils import get_openapi
 from fastapi import FastAPI, Query, HTTPException
 from scraping import scraper_service
-from models import ScrapeResponse
+from batch_scraper import batch_service
+from models import ScrapeResponse, BulkScrapeStatus
 
 
 # =================================================================
@@ -42,15 +43,16 @@ app.openapi = custom_openapi
 
 
 # =================================================================
-# API ENDPOINTS
+# API ENDPOINTS — Single URL Scraping
 # =================================================================
 # Redirect to the documentation
 @app.get("/", include_in_schema=False, response_class=RedirectResponse, tags=["Root"])
 async def redirect_to_docs():
     return "/docs"
 
-# Scraping endpoint
-@app.get("/scrapePDP", tags=["Scraping"])
+
+# Single URL scraping endpoint (Playwright-based)
+@app.get("/scrapePDP", tags=["Single Scraping"])
 async def scrape_pdp_endpoint(
             url: str = Query(..., description="The URL of the Goofish product to scrape")
         ) -> list:
@@ -59,7 +61,7 @@ async def scrape_pdp_endpoint(
             raise HTTPException(status_code=400, detail="URL is required")
 
         try:
-            # Call the scraping logic
+            # Call the Playwright-based scraping logic
             data = await scraper_service.scrape_pdp(url)
             return ScrapeResponse(success=True, data=data)
 
@@ -70,6 +72,57 @@ async def scrape_pdp_endpoint(
         except Exception as e:
             # Unexpected errors
             return ScrapeResponse(success=False, error=f"Internal Server Error: {str(e)}")
+
+
+# =================================================================
+# API ENDPOINTS — Bulk Scraping
+# =================================================================
+# Start the batch scraping process
+@app.post("/scrapeBulk", tags=["Batch Scraping"])
+async def scrape_bulk_start(
+    concurrency: int = Query(default=15, ge=1, le=50, description="Max concurrent requests")
+):
+    """
+    Start the batch scraping process for all pending URLs in urls.csv.
+    Runs in the background. Use /scrapeBulk/status to monitor progress.
+    """
+    if batch_service.is_running:
+        raise HTTPException(status_code=409, detail="Batch is already running")
+
+    # Update concurrency if different from default
+    batch_service._semaphore = asyncio.Semaphore(concurrency)
+
+    # Launch as a background task
+    asyncio.create_task(batch_service.run())
+    return {"message": "Batch scraping started", "concurrency": concurrency}
+
+
+# Check batch progress
+@app.get("/scrapeBulk/status", tags=["Batch Scraping"], response_model=BulkScrapeStatus)
+async def scrape_bulk_status():
+    """Get current batch scraping progress and statistics."""
+    return batch_service.status
+
+
+# Cancel running batch
+@app.post("/scrapeBulk/cancel", tags=["Batch Scraping"])
+async def scrape_bulk_cancel():
+    """Cancel the running batch. All progress is saved to CSV."""
+    if not batch_service.is_running:
+        raise HTTPException(status_code=400, detail="No batch is running")
+    await batch_service.cancel()
+    return {"message": "Batch cancellation requested, progress saved"}
+
+
+# Hot-swap cookies when token expires
+@app.post("/updateCookies", tags=["Configuration"])
+async def update_cookies(cookies: dict):
+    """
+    Update session cookies (e.g. after token expiry mid-batch).
+    Pass a dict like: {"_m_h5_tk": "new_value", "_m_h5_tk_enc": "new_value", ...}
+    """
+    batch_service.update_cookies(cookies)
+    return {"message": "Cookies updated", "keys": list(cookies.keys())}
 
 
 # =================================================================
