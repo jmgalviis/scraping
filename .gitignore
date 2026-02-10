@@ -1,0 +1,12 @@
+# Playwright traces
+traces/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Environment
+.env
